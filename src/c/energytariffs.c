@@ -23,6 +23,8 @@
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
 #define INT_TO_FLOAT2(n) (n) / 1000, ((n) % 1000)/10
 #define INT_TO_FLOAT3(n) (n) / 1000, (n) % 1000
+#define MS_IN_MINUTE (60 * 1000)
+#define MS_IN_HOUR (60 * MS_IN_MINUTE)
 
 #define FILLER_SIZE 10
 
@@ -30,7 +32,6 @@ static Window *s_window;
 static TextLayer *s_info_layer;
 static TextLayer *s_tariff_layer;
 static Layer *s_graph_layer;
-static bool s_js_ready;
 
 int s_top_area_height = 0;
 int16_t s_bar_width = 0;
@@ -74,6 +75,26 @@ int s_ymd_today = 0, s_ymd_tomorrow = 0;
 int s_hour_now = 0;
 int s_highlight_hour = 0;
 
+#define REQUEST_TARIFFS_DEFAULT_TIMEOUT 5000
+AppTimer* request_tariffs_timer = NULL;
+uint32_t request_tariffs_timeout = REQUEST_TARIFFS_DEFAULT_TIMEOUT;
+
+void synchronize_data();
+
+void request_tariffs_timer_cancel() {
+  if ( request_tariffs_timer ) {
+    app_timer_cancel(request_tariffs_timer);
+    request_tariffs_timer = 0;
+  }
+}
+
+void request_tariffs_timedout(void* data) {
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "Timeout!");
+  request_tariffs_timer = 0;
+  request_tariffs_timeout = MIN(request_tariffs_timeout * 6, MS_IN_HOUR);
+  synchronize_data();
+}
+
 int tm_to_int(struct tm *t) {
   return (t->tm_year+1900)*10000 + (t->tm_mon+1)*100 + t->tm_mday;
 }
@@ -102,6 +123,8 @@ void request_tariffs(int date) {
     // The outbox cannot be used right now
     APP_LOG(APP_LOG_LEVEL_ERROR, "Error preparing the outbox: %d", (int)result);
   }
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "Timer set to %lds.", request_tariffs_timeout / 1000);
+  request_tariffs_timer = app_timer_register(request_tariffs_timeout, request_tariffs_timedout, NULL);
 }
 
 bool has_valid_data_for_selection() {
@@ -192,14 +215,20 @@ void synchronize_data() {
     request_tariffs(s_ymd_today);
   } else if ( s_in_buf_tomorrow != s_ymd_tomorrow ) {
     request_tariffs(s_ymd_tomorrow);
+  } else {
+    // We have all data. Next update will be around 13:00.
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    request_tariffs_timeout = ( (t->tm_hour >= 13 ? 37 : 13) - t->tm_hour) * MS_IN_HOUR - t->tm_min * MS_IN_MINUTE;
+    APP_LOG(APP_LOG_LEVEL_DEBUG, "Timer to 13:00 %lds.", request_tariffs_timeout / 1000);
+    request_tariffs_timer = app_timer_register(request_tariffs_timeout, request_tariffs_timedout, NULL);
+    request_tariffs_timeout = REQUEST_TARIFFS_DEFAULT_TIMEOUT;
   }
-
-  // ToDo: Add timer to fire e.g. every minute (and increase interval) when today not in sync or after 13:00 and tomorrow not in sync.
-  // ToDo: Add timer to fire e.g. at 13:00 when tomorrow not in sync.
 }
 
 void update_stroom_received(Tuple* tuple) {
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Tariffs received");
+  
   int32_t* pbuffer = (int32_t*)tuple->value->data;
   int date = (int)pbuffer[0];
   //int32_t belasting = pbuffer[1];
@@ -226,7 +255,10 @@ void update_stroom_received(Tuple* tuple) {
   if ( count == TARIFFS_PER_DAY ) {
     *target_ymd = date;
     memcpy(targetbuf, &pbuffer[3], sizeof(s_tariff_today));
-    if ( date == s_ymd_today ) synchronize_data(); // We can already get tomorrow, if needed.
+    // All OK, back to the default and continue synchronizing data.
+    request_tariffs_timer_cancel();
+    request_tariffs_timeout = REQUEST_TARIFFS_DEFAULT_TIMEOUT;
+    synchronize_data();
   } else {
     *target_ymd = 0;
     memset(targetbuf, 0, sizeof(s_tariff_today));
@@ -266,7 +298,6 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
   if(tuple) {
     // PebbleKit JS is ready! Safe to send messages
     APP_LOG(APP_LOG_LEVEL_DEBUG, "JSReady received");
-    s_js_ready = true;
     synchronize_data();
     return;
   }
@@ -452,7 +483,7 @@ static void prv_init(void) {
     s_in_buf_tomorrow = persist_read_int(STORAGE_KEY_IN_BUF_TOMORROW);
     persist_read_data(STORAGE_KEY_TARIFF_TOMORROW, s_tariff_tomorrow, sizeof(s_tariff_tomorrow));
   }
-
+  
   s_window = window_create();
   window_set_click_config_provider(s_window, prv_click_config_provider);
   window_set_window_handlers(s_window, (WindowHandlers) {
@@ -461,7 +492,7 @@ static void prv_init(void) {
   });
   const bool animated = true;
   window_stack_push(s_window, animated);
-
+  
   app_message_register_inbox_received(inbox_received_handler);
   app_message_open(256, 256);
 }
