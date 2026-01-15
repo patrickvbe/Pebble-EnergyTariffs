@@ -78,8 +78,15 @@ int s_highlight_hour = 0;
 #define REQUEST_TARIFFS_DEFAULT_TIMEOUT 5000
 AppTimer* request_tariffs_timer = NULL;
 uint32_t request_tariffs_timeout = REQUEST_TARIFFS_DEFAULT_TIMEOUT;
+AppTimer* next_day_timer = NULL;
 
+// Some forward declarations.
 void synchronize_data();
+void schedule_next_day();
+
+int tm_to_int(struct tm *t) {
+  return (t->tm_year+1900)*10000 + (t->tm_mon+1)*100 + t->tm_mday;
+}  
 
 void request_tariffs_timer_cancel() {
   if ( request_tariffs_timer ) {
@@ -95,10 +102,6 @@ void request_tariffs_timedout(void* data) {
   synchronize_data();
 }
 
-int tm_to_int(struct tm *t) {
-  return (t->tm_year+1900)*10000 + (t->tm_mon+1)*100 + t->tm_mday;
-}
-
 static void update_time() {
   time_t now = time(NULL);
   struct tm *t = localtime(&now);
@@ -108,6 +111,18 @@ static void update_time() {
   t = localtime(&now);
   s_ymd_tomorrow = tm_to_int(t);
 }
+
+void next_day(void* data) {
+  update_time();
+  synchronize_data();
+  schedule_next_day();
+}
+
+void schedule_next_day() {
+  time_t now = time(NULL);
+  struct tm *t = localtime(&now);
+  next_day_timer = app_timer_register((24 - t->tm_hour) * MS_IN_HOUR - t->tm_min * MS_IN_MINUTE, next_day, NULL);
+}  
 
 void request_tariffs(int date) {
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Request tariffs for %d.", date);
@@ -198,8 +213,6 @@ void data_updated() {
 }
 
 void synchronize_data() {
-  update_time();
-
   // If we went to the next day, we can take-over the data of tomorrow we already got.
   if ( s_in_buf_tomorrow == s_ymd_today )
   {
@@ -459,7 +472,6 @@ static void prv_window_load(Window *window) {
   layer_add_child(window_layer, s_graph_layer);
 
   if ( s_in_buf_today != 0 || s_in_buf_tomorrow != 0 ) {
-    update_time();
     data_updated();
   }
 }
@@ -484,6 +496,9 @@ static void prv_init(void) {
     persist_read_data(STORAGE_KEY_TARIFF_TOMORROW, s_tariff_tomorrow, sizeof(s_tariff_tomorrow));
   }
   
+  schedule_next_day();
+  update_time();
+
   s_window = window_create();
   window_set_click_config_provider(s_window, prv_click_config_provider);
   window_set_window_handlers(s_window, (WindowHandlers) {
@@ -495,6 +510,7 @@ static void prv_init(void) {
   
   app_message_register_inbox_received(inbox_received_handler);
   app_message_open(256, 256);
+
 }
 
 static void prv_deinit(void) {
