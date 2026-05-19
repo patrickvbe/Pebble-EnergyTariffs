@@ -41,21 +41,20 @@ static char s_buffer_info[TEXTBUF_SIZE_INFO];
 #define TEXTBUF_SIZE_TARIFF 10
 static char s_buffer_tariff[TEXTBUF_SIZE_TARIFF];
 
-// We get two days of data in the buffer.
+// We get max two days of data in the buffer.
 #define TARIFFS_PER_DAY 24
-int32_t s_tariff_today[TARIFFS_PER_DAY];
-int32_t s_tariff_tomorrow[TARIFFS_PER_DAY];
-int s_in_buf_today=0, s_in_buf_tomorrow=0;
+#define STROOM_TARIEF_COUNT (TARIFFS_PER_DAY * 2)
+int32_t s_tariffs_start_ymd = 0; // Date/time stamp of first tariff entry.
+int s_tariffs_count = 0; // Number of entries filled in s_in_buf
+int32_t s_tariffs[STROOM_TARIEF_COUNT];
+int32_t s_tariff_calculated[STROOM_TARIEF_COUNT];
 int32_t s_tar_min=0, s_tar_max=0, s_display_min=0;
 bool s_display_today = true; // false = tomorrow.
-int32_t s_tariff_calculated[TARIFFS_PER_DAY * 2];
 
 // Persistency of data, so we don't have to communicate each time we start the app.
-#define STORAGE_KEY_IN_BUF_TODAY      0
-#define STORAGE_KEY_IN_BUF_TOMORROW   1
-#define STORAGE_KEY_TARIFF_TODAY      2
-#define STORAGE_KEY_TARIFF_TOMORROW   3
-#define STORAGE_KEY_SETTINGS          4
+#define STORAGE_KEY_IN_BUF      0
+#define STORAGE_KEY_TARIFF      1
+#define STORAGE_KEY_SETTINGS    2
 
 // Define our settings struct
 typedef struct Settings {
@@ -65,24 +64,23 @@ typedef struct Settings {
   GColor ForegroundColorFuture;
   GColor HighlightColor;
   int32_t InkoopVergoeding;  // * 1000
-  int32_t EnergieBelasting;  // * 1000
-  int32_t BTW;  // * 1000
+  bool EnergieBelasting;
+  bool BTW;
 } Settings;
 Settings s_settings;
 bool s_settings_changed = false;  // So we know we should save it.
 
-int s_ymd_today = 0, s_ymd_tomorrow = 0;
+int s_today_ymd = 0;
+int s_tomorrow_ymd = 0;
 int s_hour_now = 0;
 int s_highlight_hour = 0;
 
-#define REQUEST_TARIFFS_DEFAULT_TIMEOUT 5000
+#define REQUEST_TARIFFS_DEFAULT_TIMEOUT_MS 5000
 AppTimer* request_tariffs_timer = NULL;
-uint32_t request_tariffs_timeout = REQUEST_TARIFFS_DEFAULT_TIMEOUT;
-AppTimer* next_day_timer = NULL;
+uint32_t request_tariffs_timeout_ms = REQUEST_TARIFFS_DEFAULT_TIMEOUT_MS;
 
 // Some forward declarations.
 void synchronize_data();
-void schedule_next_day();
 
 int tm_to_int(struct tm *t) {
   return (t->tm_year+1900)*10000 + (t->tm_mon+1)*100 + t->tm_mday;
@@ -98,38 +96,28 @@ void request_tariffs_timer_cancel() {
 void request_tariffs_timedout(void* data) {
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Timeout!");
   request_tariffs_timer = 0;
-  request_tariffs_timeout = MIN(request_tariffs_timeout * 6, MS_IN_HOUR);
+  request_tariffs_timeout_ms = MIN(request_tariffs_timeout_ms * 6, MS_IN_HOUR);
   synchronize_data();
 }
 
 static void update_time() {
   time_t now = time(NULL);
   struct tm *t = localtime(&now);
-  s_ymd_today = tm_to_int(t);
+  s_today_ymd = tm_to_int(t);
   s_hour_now = t->tm_hour;
   now +=  SECONDS_PER_DAY;
   t = localtime(&now);
-  s_ymd_tomorrow = tm_to_int(t);
+  s_tomorrow_ymd = tm_to_int(t);
 }
 
-void next_day(void* data) {
-  update_time();
-  synchronize_data();
-  schedule_next_day();
-}
-
-void schedule_next_day() {
-  time_t now = time(NULL);
-  struct tm *t = localtime(&now);
-  next_day_timer = app_timer_register((24 - t->tm_hour) * MS_IN_HOUR - t->tm_min * MS_IN_MINUTE, next_day, NULL);
-}  
-
-void request_tariffs(int date) {
-  APP_LOG(APP_LOG_LEVEL_DEBUG, "Request tariffs for %d.", date);
+void request_tariffs() {
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "Request tariffs.");
   DictionaryIterator *out_iter;
   AppMessageResult result = app_message_outbox_begin(&out_iter);
   if(result == APP_MSG_OK) {
-    dict_write_int(out_iter, MESSAGE_KEY_RequestData, &date, sizeof(int), true);
+    dict_write_int8(out_iter, MESSAGE_KEY_RequestData, 0);
+    dict_write_int8(out_iter, MESSAGE_KEY_IncludeVat, s_settings.EnergieBelasting);
+    dict_write_int8(out_iter, MESSAGE_KEY_IncludeTax, s_settings.BTW);
     result = app_message_outbox_send();
     if(result != APP_MSG_OK) {
       APP_LOG(APP_LOG_LEVEL_ERROR, "Error sending the outbox: %d", (int)result);
@@ -138,12 +126,12 @@ void request_tariffs(int date) {
     // The outbox cannot be used right now
     APP_LOG(APP_LOG_LEVEL_ERROR, "Error preparing the outbox: %d", (int)result);
   }
-  APP_LOG(APP_LOG_LEVEL_DEBUG, "Timer set to %lds.", request_tariffs_timeout / 1000);
-  request_tariffs_timer = app_timer_register(request_tariffs_timeout, request_tariffs_timedout, NULL);
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "Timer set to %lds.", request_tariffs_timeout_ms / 1000);
+  request_tariffs_timer = app_timer_register(request_tariffs_timeout_ms, request_tariffs_timedout, NULL);
 }
 
 bool has_valid_data_for_selection() {
-  return (s_display_today && s_in_buf_today == s_ymd_today) || (!s_display_today && s_in_buf_tomorrow == s_ymd_tomorrow);
+  return s_tariffs_start_ymd == s_today_ymd && (s_display_today  || s_tariffs_count > TARIFFS_PER_DAY);
 }
 
 int32_t multiply1000(int32_t a, int32_t b) {
@@ -151,10 +139,10 @@ int32_t multiply1000(int32_t a, int32_t b) {
 }
 
 void update_text() {
-  if ( s_in_buf_today == 0 && s_in_buf_tomorrow == 0 ) {
+  if ( s_tariffs_count == 0 ) {
     snprintf(s_buffer_info, TEXTBUF_SIZE_INFO, "Geen gegevens");
   } else {
-    int ymd = s_display_today ? s_ymd_today : s_ymd_tomorrow;
+    int ymd = s_display_today ? s_today_ymd : s_tomorrow_ymd;
     snprintf(s_buffer_info, TEXTBUF_SIZE_INFO, "%ld.%02ld-%ld.%02ld\n%d-%d-%d %d:00", INT_TO_FLOAT2(s_tar_min), INT_TO_FLOAT2(s_tar_max), ymd % 100, (ymd/100) % 100, ymd / 10000, s_highlight_hour);
     if ( has_valid_data_for_selection() ) {
       snprintf(s_buffer_tariff, TEXTBUF_SIZE_TARIFF, "%ld.%02ld", INT_TO_FLOAT2(s_tariff_calculated[s_highlight_hour + (s_display_today ? 0 : TARIFFS_PER_DAY)]));
@@ -181,61 +169,33 @@ void set_display_today(bool value) {
 }
 
 int32_t calc_rate(int rate) {
-  return multiply1000(rate, s_settings.BTW) + s_settings.InkoopVergoeding + s_settings.EnergieBelasting;
-}
-
-void calculate_data(int32_t* buf, int* calcpos, bool isvalid, bool* isfirst) {
-  for ( int idx=0; idx < TARIFFS_PER_DAY; idx++, (*calcpos)++ ) {
-    if ( isvalid ) {
-      s_tariff_calculated[*calcpos] = calc_rate(buf[idx]);
-      if ( *isfirst ) {
-        s_tar_min = s_tar_max =  s_tariff_calculated[*calcpos];
-        *isfirst = false;
-      } else {
-        s_tar_min = MIN(s_tar_min, s_tariff_calculated[*calcpos]);
-        s_tar_max = MAX(s_tar_max, s_tariff_calculated[*calcpos]);
-      }
-    } else {
-      s_tariff_calculated[*calcpos] = calc_rate(0);
-    }
-  }
+  return rate + s_settings.InkoopVergoeding;
 }
 
 void data_updated() {
-  // Calculate statistics over both days.
-  int calcpos = 0;
-  bool isfirst = true;
-  calculate_data(s_tariff_today,    &calcpos, s_in_buf_today    != 0, &isfirst);
-  calculate_data(s_tariff_tomorrow, &calcpos, s_in_buf_tomorrow != 0, &isfirst);
-  if ( isfirst ) { s_tar_min = s_tar_max = 0; }
+  s_tar_min = s_tar_max = 0;
+  for ( int idx=0; idx < STROOM_TARIEF_COUNT; idx++ ) {
+    if ( idx < s_tariffs_count ) {
+      s_tariff_calculated[idx] = s_tariffs[idx] + s_settings.InkoopVergoeding;
+      if ( idx == 0 ) {
+        s_tar_min = s_tariff_calculated[idx];
+        s_tar_max = s_tariff_calculated[idx];
+      } else {
+        s_tar_min = MIN(s_tar_min, s_tariff_calculated[idx]);
+        s_tar_max = MAX(s_tar_max, s_tariff_calculated[idx]);
+      }
+    } else {
+      s_tariff_calculated[idx] = 0;
+    }
+  }
   s_display_min = s_tar_min > 0 ? 0 : s_tar_min;
   set_display_today(true);
 }
 
 void synchronize_data() {
-  // If we went to the next day, we can take-over the data of tomorrow we already got.
-  if ( s_in_buf_tomorrow == s_ymd_today )
-  {
-    s_in_buf_today = s_in_buf_tomorrow;
-    s_in_buf_tomorrow = 0;
-    memcpy(s_tariff_today, s_tariff_tomorrow, sizeof(s_tariff_today));
-    persist_write_int(STORAGE_KEY_IN_BUF_TOMORROW, s_in_buf_tomorrow);
-    persist_write_int(STORAGE_KEY_IN_BUF_TODAY, s_in_buf_today);
-    persist_write_data(STORAGE_KEY_TARIFF_TODAY, s_tariff_today, sizeof(s_tariff_today));
-    data_updated();
-  }
-  if ( s_in_buf_today != s_ymd_today ) {
-    request_tariffs(s_ymd_today);
-  } else if ( s_in_buf_tomorrow != s_ymd_tomorrow ) {
-    request_tariffs(s_ymd_tomorrow);
-  } else {
-    // We have all data. Next update will be around 13:00.
-    time_t now = time(NULL);
-    struct tm *t = localtime(&now);
-    request_tariffs_timeout = ( (t->tm_hour >= 13 ? 37 : 13) - t->tm_hour) * MS_IN_HOUR - t->tm_min * MS_IN_MINUTE;
-    APP_LOG(APP_LOG_LEVEL_DEBUG, "Timer to 13:00 %lds.", request_tariffs_timeout / 1000);
-    request_tariffs_timer = app_timer_register(request_tariffs_timeout, request_tariffs_timedout, NULL);
-    request_tariffs_timeout = REQUEST_TARIFFS_DEFAULT_TIMEOUT;
+  if ( s_tariffs_start_ymd != s_today_ymd || s_tariffs_count <= TARIFFS_PER_DAY ) {
+    APP_LOG(APP_LOG_LEVEL_DEBUG, "Request tariffs because %d != %d.", s_tariffs_start_ymd, s_today_ymd);
+    request_tariffs();
   }
 }
 
@@ -243,41 +203,21 @@ void update_stroom_received(Tuple* tuple) {
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Tariffs received");
   
   int32_t* pbuffer = (int32_t*)tuple->value->data;
-  int date = (int)pbuffer[0];
-  //int32_t belasting = pbuffer[1];
-  int count = (int)pbuffer[2];
-  APP_LOG(APP_LOG_LEVEL_DEBUG, "Received tariffs for %d, %d items.", date, count);
-  
-  // See which day / part of the buffer got the update
-  int32_t* targetbuf = NULL;
-  int* target_ymd = NULL;
-  uint32_t target_in_buf_key = 0, target_stroom_key = 0;
-  if ( date == s_ymd_today ) {
-    target_ymd = &s_in_buf_today;
-    targetbuf = s_tariff_today;
-    target_in_buf_key = STORAGE_KEY_IN_BUF_TODAY;
-    target_stroom_key = STORAGE_KEY_TARIFF_TODAY;
-  } else if ( date == s_ymd_tomorrow ) {
-    target_ymd = &s_in_buf_tomorrow;
-    targetbuf = s_tariff_tomorrow;
-    target_in_buf_key = STORAGE_KEY_IN_BUF_TOMORROW;
-    target_stroom_key = STORAGE_KEY_TARIFF_TOMORROW;
-  } else return;
-
+  time_t date = pbuffer[0];
+  s_tariffs_count = MIN((tuple->length / 4) - 1, STROOM_TARIEF_COUNT);
+  struct tm *t = localtime(&date);
+  s_tariffs_start_ymd = tm_to_int(t);
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "Received tariffs for %d (%d), %d items.", date, s_tariffs_start_ymd, s_tariffs_count);
+    
   // Process the update
-  if ( count == TARIFFS_PER_DAY ) {
-    *target_ymd = date;
-    memcpy(targetbuf, &pbuffer[3], sizeof(s_tariff_today));
-    // All OK, back to the default and continue synchronizing data.
-    request_tariffs_timer_cancel();
-    request_tariffs_timeout = REQUEST_TARIFFS_DEFAULT_TIMEOUT;
-    synchronize_data();
-  } else {
-    *target_ymd = 0;
-    memset(targetbuf, 0, sizeof(s_tariff_today));
-  }
-  persist_write_int(target_in_buf_key, *target_ymd);
-  persist_write_data(target_stroom_key, targetbuf, sizeof(s_tariff_today));
+  memcpy(s_tariffs, &pbuffer[1], s_tariffs_count * 4);
+  // All OK, back to the default and continue synchronizing data.
+  request_tariffs_timer_cancel();
+  request_tariffs_timeout_ms = REQUEST_TARIFFS_DEFAULT_TIMEOUT_MS;
+
+  // Store for next start
+  // persist_write_int(target_in_buf_key, *target_ymd);
+  // persist_write_data(target_stroom_key, targetbuf, sizeof(s_tariff_today));
 
   data_updated();
 }
@@ -353,17 +293,21 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
     layer_mark_dirty(s_graph_layer);
     s_settings_changed = true;
   }
-  tuple = dict_find(iter, MESSAGE_KEY_EnergieBelasting);
+  tuple = dict_find(iter, MESSAGE_KEY_IncludeTax);
   if(tuple) {
-    s_settings.EnergieBelasting = str_to_int100000(tuple->value->cstring);
-    data_updated();
-    s_settings_changed = true;
+    if ( s_settings.EnergieBelasting != tuple->value->uint8 ) {
+      s_settings.EnergieBelasting = tuple->value->uint8;
+      synchronize_data();
+      s_settings_changed = true;
+    }
   }
-  tuple = dict_find(iter, MESSAGE_KEY_BTW);
+  tuple = dict_find(iter, MESSAGE_KEY_IncludeTax);
   if(tuple) {
-    s_settings.BTW = str_to_int100000(tuple->value->cstring) / 10000 + 1000;
-    data_updated();
-    s_settings_changed = true;
+    if ( s_settings.BTW != tuple->value->uint8 ) {
+      s_settings.BTW = tuple->value->uint8;
+      synchronize_data();
+      s_settings_changed = true;
+    }
   }
   tuple = dict_find(iter, MESSAGE_KEY_InkoopVergoeding);
   if(tuple) {
@@ -471,7 +415,7 @@ static void prv_window_load(Window *window) {
   layer_set_update_proc(s_graph_layer, graph_update_proc);
   layer_add_child(window_layer, s_graph_layer);
 
-  if ( s_in_buf_today != 0 || s_in_buf_tomorrow != 0 ) {
+  if ( s_tariffs_count != 0 ) {
     data_updated();
   }
 }
@@ -485,18 +429,17 @@ static void prv_window_unload(Window *window) {
 static void prv_init(void) {
   // Get data from storage
   s_settings = (struct Settings){GColorBlack, GColorWhite, PBL_IF_COLOR_ELSE(GColorDarkGreen, GColorDarkGray),
-    PBL_IF_COLOR_ELSE(GColorMayGreen, GColorDarkGray), PBL_IF_COLOR_ELSE(GColorGreen, GColorWhite), 2000, 11080, 1210};
+    PBL_IF_COLOR_ELSE(GColorMayGreen, GColorDarkGray), PBL_IF_COLOR_ELSE(GColorGreen, GColorWhite), 2000, true, true};
   persist_read_data(STORAGE_KEY_SETTINGS, &s_settings, sizeof(s_settings));
-  if ( persist_exists(STORAGE_KEY_IN_BUF_TODAY) ) {
-    s_in_buf_today = persist_read_int(STORAGE_KEY_IN_BUF_TODAY);
-    persist_read_data(STORAGE_KEY_TARIFF_TODAY, s_tariff_today, sizeof(s_tariff_today));
-  }
-  if ( persist_exists(STORAGE_KEY_IN_BUF_TOMORROW) ) {
-    s_in_buf_tomorrow = persist_read_int(STORAGE_KEY_IN_BUF_TOMORROW);
-    persist_read_data(STORAGE_KEY_TARIFF_TOMORROW, s_tariff_tomorrow, sizeof(s_tariff_tomorrow));
-  }
+  // if ( persist_exists(STORAGE_KEY_IN_BUF_TODAY) ) {
+  //   s_in_buf_today = persist_read_int(STORAGE_KEY_IN_BUF_TODAY);
+  //   persist_read_data(STORAGE_KEY_TARIFF_TODAY, s_tariff_today, sizeof(s_tariff_today));
+  // }
+  // if ( persist_exists(STORAGE_KEY_IN_BUF_TOMORROW) ) {
+  //   s_in_buf_tomorrow = persist_read_int(STORAGE_KEY_IN_BUF_TOMORROW);
+  //   persist_read_data(STORAGE_KEY_TARIFF_TOMORROW, s_tariff_tomorrow, sizeof(s_tariff_tomorrow));
+  // }
   
-  schedule_next_day();
   update_time();
 
   s_window = window_create();

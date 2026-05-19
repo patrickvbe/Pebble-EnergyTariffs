@@ -57,25 +57,23 @@ module.exports = [
         "defaultValue": "Tarief berekening"
       },
       {
+        "type": "toggle",
+        "messageKey": "EnergieBelasting",
+        "label": "Inclusief Energiebelasting",
+        "defaultValue": true
+      },
+      {
+        "type": "toggle",
+        "messageKey": "BTW",
+        "label": "Inclusief BTW",
+        "defaultValue": true
+      },
+      {
         "type": "input",
         "messageKey": "InkoopVergoeding",
         "label": "Inkoop vergoeding €",
         "description": "Inclusief BTW. E.g. 0.02",
         "defaultValue": "0.02"
-      },
-      {
-        "type": "input",
-        "messageKey": "EnergieBelasting",
-        "label": "Energie belasting €",
-        "description": "2026 = 0.1108",
-        "defaultValue": "0.1108"
-      },
-      {
-        "type": "input",
-        "messageKey": "BTW",
-        "label": "BTW %",
-        "description": "2026 = 21",
-        "defaultValue": "21"
       }
     ]
   },

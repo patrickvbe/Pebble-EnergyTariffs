@@ -1,38 +1,6 @@
-// Show energy tariffs on the Pebble watch.
-// Copyright (C) 2026 Patrick van Beem (patrick@vanbeem.info)
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+var XMLHttpRequest = require("xmlhttprequest").XMLHttpRequest;
 
-
-// Require the keys' numeric values.
-var keys = require('message_keys');
-
-// Import the Clay package for the configuration page
-var Clay = require('pebble-clay');
-// Load our Clay configuration file
-var clayConfig = require('./config');
-// Initialize Clay
-var clay = new Clay(clayConfig);
-
-const STROOM_TARIEF_COUNT = 50; // Max app. 3 days: before, day itself, day after.
-
-Pebble.addEventListener('ready', function() {
-  //console.log('PebbleKit JS ready.');
-
-  // Update s_js_ready on watch
-  Pebble.sendAppMessage({JSReady: 1});
-});
+const STROOM_TARIEF_COUNT = 80; // Max app. 3 days: before, day itself, day after.
 
 function fetchStroom(includevat, includetax) {
   var today = new Date();
@@ -57,26 +25,29 @@ function fetchStroom(includevat, includetax) {
         try {
           //console.log(req.responseText);
           response = JSON.parse(req.responseText);
-          console.log(today.valueOf() / 3600000 / 24);
-          console.log(today.toString());
-          console.log(today.toISOString());
           todayhours = Math.floor(today.valueOf() / 3600000 / 24) * 24 + today.getTimezoneOffset() / 60;  // Returned values are in UTC.
           startdate = new Date(response.range.start).valueOf() / 1000;
           startdatehours = startdate / 3600;
           enddatehours = new Date(response.range.end).valueOf() / 3600000;
           itemcount = enddatehours - todayhours;
+          console.log(today.valueOf(), new Date(response.range.end).valueOf());
+          console.log(today, response.range.end);
+          console.log(todayhours, enddatehours);
+          console.log(itemcount);
           data[0] = today.valueOf() / 1000; // In seconds.
-          if ( includevat && includetax ) {
-            values = response.all_in_with_vat;
-          }
-          else if ( includevat ) {
-            values = response.base_with_vat;
-          }
-          else if ( includetax ) {
-            values = response.all_in;
-          }
-          else {
-            values = response.base;
+          if ( itemcount <= STROOM_TARIEF_COUNT ) {
+            if ( includevat && includetax ) {
+              values = response.all_in_with_vat;
+            }
+            else if ( includevat ) {
+              values = response.base_with_vat;
+            }
+            else if ( includetax ) {
+              values = response.all_in;
+            }
+            else {
+              values = response.base;
+            }
           }
           for ( const [key, item] of Object.entries(values) ) {
             startitemhours = new Date(item.start).valueOf() / 3600000;
@@ -91,15 +62,11 @@ function fetchStroom(includevat, includetax) {
           console.log(error);
         }
       }
-      console.log("Send response");
-      Pebble.sendAppMessage({Stroom: Array.from(new Uint8Array(buffer, 0, (itemcount+1)*4))});
+      //console.log("Send response");
+      //Pebble.sendAppMessage({Stroom: Array.from(new Uint8Array(buffer, 0, (itemcount+1)*4))});
     }
   };
   req.send(null);
 }
 
-Pebble.addEventListener('appmessage', function(e) {
-  console.log(e.type);
-  console.log(e.payload[keys.RequestData]);
-  fetchStroom(e.payload[keys.IncludeVat], e.payload[keys.IncludeTax]);
-});
+fetchStroom(true, true);

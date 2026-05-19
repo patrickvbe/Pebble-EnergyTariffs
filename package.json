@@ -1,7 +1,7 @@
 {
   "name": "energytariffs",
   "author": "Patrick van Beem <patrick@vanbeem.info>",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "keywords": [
     "energytariffs",
     "energy"
@@ -35,8 +35,8 @@
       "ForegroundColorPast",
       "ForegroundColorFuture",
       "HighlightColor",
-      "EnergieBelasting",
-      "BTW",
+      "IncludeTax",
+      "IncludeVat",
       "InkoopVergoeding"
     ],
     "resources": {
