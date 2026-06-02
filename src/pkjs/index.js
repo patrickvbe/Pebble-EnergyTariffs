@@ -100,6 +100,5 @@ function fetchStroom(includevat, includetax) {
 
 Pebble.addEventListener('appmessage', function(e) {
   console.log(e.type);
-  console.log(e.payload[keys.RequestData]);
-  fetchStroom(e.payload[keys.IncludeVat], e.payload[keys.IncludeTax]);
+  fetchStroom(e.payload.IncludeVat, e.payload.IncludeTax);
 });

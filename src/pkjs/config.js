@@ -58,13 +58,13 @@ module.exports = [
       },
       {
         "type": "toggle",
-        "messageKey": "EnergieBelasting",
+        "messageKey": "IncludeTax",
         "label": "Inclusief Energiebelasting",
         "defaultValue": true
       },
       {
         "type": "toggle",
-        "messageKey": "BTW",
+        "messageKey": "IncludeVat",
         "label": "Inclusief BTW",
         "defaultValue": true
       },

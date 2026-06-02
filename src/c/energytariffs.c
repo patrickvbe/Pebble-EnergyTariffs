@@ -36,9 +36,9 @@ static Layer *s_graph_layer;
 int s_top_area_height = 0;
 int16_t s_bar_width = 0;
 int16_t s_graph_offset = 0;
-#define TEXTBUF_SIZE_INFO 30
+#define TEXTBUF_SIZE_INFO 15
 static char s_buffer_info[TEXTBUF_SIZE_INFO];
-#define TEXTBUF_SIZE_TARIFF 10
+#define TEXTBUF_SIZE_TARIFF 15
 static char s_buffer_tariff[TEXTBUF_SIZE_TARIFF];
 
 // We get max two days of data in the buffer.
@@ -115,9 +115,9 @@ void request_tariffs() {
   DictionaryIterator *out_iter;
   AppMessageResult result = app_message_outbox_begin(&out_iter);
   if(result == APP_MSG_OK) {
-    dict_write_int8(out_iter, MESSAGE_KEY_RequestData, 0);
-    dict_write_int8(out_iter, MESSAGE_KEY_IncludeVat, s_settings.EnergieBelasting);
-    dict_write_int8(out_iter, MESSAGE_KEY_IncludeTax, s_settings.BTW);
+    dict_write_int32(out_iter, MESSAGE_KEY_RequestData, 0);
+    dict_write_int32(out_iter, MESSAGE_KEY_IncludeVat, s_settings.BTW);
+    dict_write_int32(out_iter, MESSAGE_KEY_IncludeTax, s_settings.EnergieBelasting);
     result = app_message_outbox_send();
     if(result != APP_MSG_OK) {
       APP_LOG(APP_LOG_LEVEL_ERROR, "Error sending the outbox: %d", (int)result);
@@ -143,9 +143,9 @@ void update_text() {
     snprintf(s_buffer_info, TEXTBUF_SIZE_INFO, "Geen gegevens");
   } else {
     int ymd = s_display_today ? s_today_ymd : s_tomorrow_ymd;
-    snprintf(s_buffer_info, TEXTBUF_SIZE_INFO, "%ld.%02ld-%ld.%02ld\n%d-%d-%d %d:00", INT_TO_FLOAT2(s_tar_min), INT_TO_FLOAT2(s_tar_max), ymd % 100, (ymd/100) % 100, ymd / 10000, s_highlight_hour);
+    snprintf(s_buffer_info, TEXTBUF_SIZE_INFO, "%d-%d-%d", ymd % 100, (ymd/100) % 100, ymd / 10000);
     if ( has_valid_data_for_selection() ) {
-      snprintf(s_buffer_tariff, TEXTBUF_SIZE_TARIFF, "%ld.%02ld", INT_TO_FLOAT2(s_tariff_calculated[s_highlight_hour + (s_display_today ? 0 : TARIFFS_PER_DAY)]));
+      snprintf(s_buffer_tariff, TEXTBUF_SIZE_TARIFF, "%d:00\n%ld.%02ld", s_highlight_hour, INT_TO_FLOAT2(s_tariff_calculated[s_highlight_hour + (s_display_today ? 0 : TARIFFS_PER_DAY)]));
     } else {
       snprintf(s_buffer_tariff, TEXTBUF_SIZE_TARIFF, "-.-");
     }
@@ -295,17 +295,21 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
   }
   tuple = dict_find(iter, MESSAGE_KEY_IncludeTax);
   if(tuple) {
-    if ( s_settings.EnergieBelasting != tuple->value->uint8 ) {
-      s_settings.EnergieBelasting = tuple->value->uint8;
-      synchronize_data();
+    APP_LOG(APP_LOG_LEVEL_DEBUG, "Tax %d", tuple->value->uint8);
+    bool newvalue = tuple->value->uint8;
+    if ( s_settings.EnergieBelasting != newvalue ) {
+      s_settings.EnergieBelasting = newvalue;
+      request_tariffs();
       s_settings_changed = true;
     }
   }
-  tuple = dict_find(iter, MESSAGE_KEY_IncludeTax);
+  tuple = dict_find(iter, MESSAGE_KEY_IncludeVat);
   if(tuple) {
-    if ( s_settings.BTW != tuple->value->uint8 ) {
-      s_settings.BTW = tuple->value->uint8;
-      synchronize_data();
+    APP_LOG(APP_LOG_LEVEL_DEBUG, "Vat %d", tuple->value->uint8);
+    bool newvalue = tuple->value->uint8;
+    if ( s_settings.BTW != newvalue ) {
+      s_settings.BTW = newvalue;
+      request_tariffs();
       s_settings_changed = true;
     }
   }
@@ -321,7 +325,7 @@ static void prv_select_click_handler(ClickRecognizerRef recognizer, void *contex
   set_display_today(!s_display_today);
 }
 
-static void prv_up_click_handler(ClickRecognizerRef recognizer, void *context) {
+static void prv_down_click_handler(ClickRecognizerRef recognizer, void *context) {
   if ( ++s_highlight_hour > 23 ) {
     if ( s_display_today ) {
       s_display_today = false;
@@ -334,7 +338,7 @@ static void prv_up_click_handler(ClickRecognizerRef recognizer, void *context) {
   redraw();
 }
 
-static void prv_down_click_handler(ClickRecognizerRef recognizer, void *context) {
+static void prv_up_click_handler(ClickRecognizerRef recognizer, void *context) {
   if ( --s_highlight_hour < 0 ) {
     if ( !s_display_today ) {
       s_display_today = true;
@@ -386,9 +390,9 @@ static void prv_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
 
-  GFont font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
+  GFont font = fonts_get_system_font(FONT_KEY_GOTHIC_28);
   GSize font_size = graphics_text_layout_get_content_size("1", font, bounds, GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft);
-  s_top_area_height = font_size.h * 2;
+  s_top_area_height = font_size.h;
 
   s_info_layer = text_layer_create(GRect(0, 0, bounds.size.w, s_top_area_height));
   text_layer_set_font(s_info_layer, font);
@@ -400,14 +404,14 @@ static void prv_window_load(Window *window) {
   font = fonts_get_system_font(FONT_KEY_LECO_42_NUMBERS);
   font_size = graphics_text_layout_get_content_size("1", font, bounds, GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft);
   
-  s_tariff_layer = text_layer_create(GRect(0, s_top_area_height, bounds.size.w, font_size.h + FILLER_SIZE));
+  s_tariff_layer = text_layer_create(GRect(0, s_top_area_height, bounds.size.w, font_size.h * 2 + FILLER_SIZE));
   text_layer_set_font(s_tariff_layer, font);
   text_layer_set_background_color(s_tariff_layer, s_settings.BackgroundColor);
   text_layer_set_text_color(s_tariff_layer, s_settings.TextColor);
   text_layer_set_text(s_tariff_layer, "-.-");
   text_layer_set_text_alignment(s_tariff_layer, GTextAlignmentCenter);
   layer_add_child(window_layer, text_layer_get_layer(s_tariff_layer));
-  s_top_area_height += font_size.h + FILLER_SIZE;
+  s_top_area_height += font_size.h * 2 + FILLER_SIZE;
   
   s_bar_width = bounds.size.w / TARIFFS_PER_DAY;
   s_graph_offset = (bounds.size.w - s_bar_width * TARIFFS_PER_DAY) / 2; // Center the graph area.
