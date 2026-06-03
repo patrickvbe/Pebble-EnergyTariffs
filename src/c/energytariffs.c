@@ -23,8 +23,8 @@
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
 #define INT_TO_FLOAT2(n) (n) / 1000, ((n) % 1000)/10
 #define INT_TO_FLOAT3(n) (n) / 1000, (n) % 1000
-#define MS_IN_MINUTE (60 * 1000)
-#define MS_IN_HOUR (60 * MS_IN_MINUTE)
+#define MS_IN_MINUTE (SECONDS_PER_MINUTE * 1000)
+#define MS_IN_HOUR (MINUTES_PER_HOUR * MS_IN_MINUTE)
 
 #define FILLER_SIZE 10
 
@@ -89,24 +89,24 @@ int tm_to_int(struct tm *t) {
 void request_tariffs_timer_cancel() {
   if ( request_tariffs_timer ) {
     app_timer_cancel(request_tariffs_timer);
-    request_tariffs_timer = 0;
+    request_tariffs_timer = NULL;
   }
 }
 
 void request_tariffs_timedout(void* data) {
   APP_LOG(APP_LOG_LEVEL_DEBUG, "Timeout!");
-  request_tariffs_timer = 0;
+  request_tariffs_timer = NULL;
   request_tariffs_timeout_ms = MIN(request_tariffs_timeout_ms * 6, MS_IN_HOUR);
   synchronize_data();
 }
 
 static void update_time() {
-  time_t now = time(NULL);
-  struct tm *t = localtime(&now);
+  time_t work_time = time(NULL);
+  struct tm *t = localtime(&work_time);
   s_today_ymd = tm_to_int(t);
   s_hour_now = t->tm_hour;
-  now +=  SECONDS_PER_DAY;
-  t = localtime(&now);
+  work_time +=  SECONDS_PER_DAY;
+  t = localtime(&work_time);
   s_tomorrow_ymd = tm_to_int(t);
 }
 
@@ -134,20 +134,16 @@ bool has_valid_data_for_selection() {
   return s_tariffs_start_ymd == s_today_ymd && (s_display_today  || s_tariffs_count > TARIFFS_PER_DAY);
 }
 
-int32_t multiply1000(int32_t a, int32_t b) {
-  return ((int64_t)a * (int64_t)b) / 1000;
-}
-
 void update_text() {
   if ( s_tariffs_count == 0 ) {
-    snprintf(s_buffer_info, TEXTBUF_SIZE_INFO, "Geen gegevens");
+    snprintf(s_buffer_info, TEXTBUF_SIZE_INFO, "geen gegevens");
   } else {
     int ymd = s_display_today ? s_today_ymd : s_tomorrow_ymd;
     snprintf(s_buffer_info, TEXTBUF_SIZE_INFO, "%d-%d-%d", ymd % 100, (ymd/100) % 100, ymd / 10000);
     if ( has_valid_data_for_selection() ) {
       snprintf(s_buffer_tariff, TEXTBUF_SIZE_TARIFF, "%d:00\n%ld.%02ld", s_highlight_hour, INT_TO_FLOAT2(s_tariff_calculated[s_highlight_hour + (s_display_today ? 0 : TARIFFS_PER_DAY)]));
     } else {
-      snprintf(s_buffer_tariff, TEXTBUF_SIZE_TARIFF, "-.-");
+      snprintf(s_buffer_tariff, TEXTBUF_SIZE_TARIFF, "geen gegevens");
     }
   }
   text_layer_set_text(s_info_layer, s_buffer_info);
@@ -166,10 +162,6 @@ void set_display_today(bool value) {
     s_highlight_hour = 12;
   }
   redraw();
-}
-
-int32_t calc_rate(int rate) {
-  return rate + s_settings.InkoopVergoeding;
 }
 
 void data_updated() {
@@ -193,7 +185,7 @@ void data_updated() {
 }
 
 void synchronize_data() {
-  if ( s_tariffs_start_ymd != s_today_ymd || s_tariffs_count <= TARIFFS_PER_DAY ) {
+  if ( s_tariffs_start_ymd != s_today_ymd || (s_tariffs_count <= TARIFFS_PER_DAY ) ) {
     APP_LOG(APP_LOG_LEVEL_DEBUG, "Request tariffs because %d != %d.", s_tariffs_start_ymd, s_today_ymd);
     request_tariffs();
   }
@@ -216,8 +208,8 @@ void update_stroom_received(Tuple* tuple) {
   request_tariffs_timeout_ms = REQUEST_TARIFFS_DEFAULT_TIMEOUT_MS;
 
   // Store for next start
-  // persist_write_int(target_in_buf_key, *target_ymd);
-  // persist_write_data(target_stroom_key, targetbuf, sizeof(s_tariff_today));
+  persist_write_int(STORAGE_KEY_IN_BUF, s_tariffs_start_ymd);
+  persist_write_data(STORAGE_KEY_TARIFF, s_tariffs, sizeof(s_tariffs[0]) * s_tariffs_count);
 
   data_updated();
 }
@@ -401,7 +393,7 @@ static void prv_window_load(Window *window) {
   text_layer_set_text_alignment(s_info_layer, GTextAlignmentCenter);
   layer_add_child(window_layer, text_layer_get_layer(s_info_layer));
   
-  font = fonts_get_system_font(FONT_KEY_LECO_42_NUMBERS);
+  font = fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD);
   font_size = graphics_text_layout_get_content_size("1", font, bounds, GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft);
   
   s_tariff_layer = text_layer_create(GRect(0, s_top_area_height, bounds.size.w, font_size.h * 2 + FILLER_SIZE));
@@ -435,14 +427,13 @@ static void prv_init(void) {
   s_settings = (struct Settings){GColorBlack, GColorWhite, PBL_IF_COLOR_ELSE(GColorDarkGreen, GColorDarkGray),
     PBL_IF_COLOR_ELSE(GColorMayGreen, GColorDarkGray), PBL_IF_COLOR_ELSE(GColorGreen, GColorWhite), 2000, true, true};
   persist_read_data(STORAGE_KEY_SETTINGS, &s_settings, sizeof(s_settings));
-  // if ( persist_exists(STORAGE_KEY_IN_BUF_TODAY) ) {
-  //   s_in_buf_today = persist_read_int(STORAGE_KEY_IN_BUF_TODAY);
-  //   persist_read_data(STORAGE_KEY_TARIFF_TODAY, s_tariff_today, sizeof(s_tariff_today));
-  // }
-  // if ( persist_exists(STORAGE_KEY_IN_BUF_TOMORROW) ) {
-  //   s_in_buf_tomorrow = persist_read_int(STORAGE_KEY_IN_BUF_TOMORROW);
-  //   persist_read_data(STORAGE_KEY_TARIFF_TOMORROW, s_tariff_tomorrow, sizeof(s_tariff_tomorrow));
-  // }
+
+  if ( persist_exists(STORAGE_KEY_IN_BUF) && persist_exists(STORAGE_KEY_TARIFF) ) {
+    s_tariffs_start_ymd = persist_read_int(STORAGE_KEY_IN_BUF);
+    s_tariffs_count = persist_get_size(STORAGE_KEY_TARIFF);
+    persist_read_data(STORAGE_KEY_TARIFF, s_tariffs, s_tariffs_count);
+    s_tariffs_count /= sizeof(s_tariffs[0]);
+  }
   
   update_time();
 

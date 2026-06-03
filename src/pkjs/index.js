@@ -28,8 +28,6 @@ var clay = new Clay(clayConfig);
 const STROOM_TARIEF_COUNT = 50; // Max app. 3 days: before, day itself, day after.
 
 Pebble.addEventListener('ready', function() {
-  //console.log('PebbleKit JS ready.');
-
   // Update s_js_ready on watch
   Pebble.sendAppMessage({JSReady: 1});
 });
@@ -57,9 +55,6 @@ function fetchStroom(includevat, includetax) {
         try {
           //console.log(req.responseText);
           response = JSON.parse(req.responseText);
-          console.log(today.valueOf() / 3600000 / 24);
-          console.log(today.toString());
-          console.log(today.toISOString());
           todayhours = Math.floor(today.valueOf() / 3600000 / 24) * 24 + today.getTimezoneOffset() / 60;  // Returned values are in UTC.
           startdate = new Date(response.range.start).valueOf() / 1000;
           startdatehours = startdate / 3600;
@@ -91,7 +86,6 @@ function fetchStroom(includevat, includetax) {
           console.log(error);
         }
       }
-      console.log("Send response");
       Pebble.sendAppMessage({Stroom: Array.from(new Uint8Array(buffer, 0, (itemcount+1)*4))});
     }
   };
@@ -99,6 +93,5 @@ function fetchStroom(includevat, includetax) {
 }
 
 Pebble.addEventListener('appmessage', function(e) {
-  console.log(e.type);
   fetchStroom(e.payload.IncludeVat, e.payload.IncludeTax);
 });
