@@ -50,6 +50,7 @@ int32_t s_tariffs[STROOM_TARIEF_COUNT];
 int32_t s_tariff_calculated[STROOM_TARIEF_COUNT];
 int32_t s_tar_min=0, s_tar_max=0, s_display_min=0;
 bool s_display_today = true; // false = tomorrow.
+static const char s_no_data[] = "geen\ndata";
 
 // Persistency of data, so we don't have to communicate each time we start the app.
 #define STORAGE_KEY_IN_BUF      0
@@ -136,14 +137,14 @@ bool has_valid_data_for_selection() {
 
 void update_text() {
   if ( s_tariffs_count == 0 ) {
-    snprintf(s_buffer_info, TEXTBUF_SIZE_INFO, "geen gegevens");
+    s_buffer_info[0] = 0;
   } else {
     int ymd = s_display_today ? s_today_ymd : s_tomorrow_ymd;
     snprintf(s_buffer_info, TEXTBUF_SIZE_INFO, "%d-%d-%d", ymd % 100, (ymd/100) % 100, ymd / 10000);
     if ( has_valid_data_for_selection() ) {
       snprintf(s_buffer_tariff, TEXTBUF_SIZE_TARIFF, "%d:00\n%ld.%02ld", s_highlight_hour, INT_TO_FLOAT2(s_tariff_calculated[s_highlight_hour + (s_display_today ? 0 : TARIFFS_PER_DAY)]));
     } else {
-      snprintf(s_buffer_tariff, TEXTBUF_SIZE_TARIFF, "geen gegevens");
+      strcpy(s_buffer_tariff, s_no_data);
     }
   }
   text_layer_set_text(s_info_layer, s_buffer_info);
@@ -400,7 +401,7 @@ static void prv_window_load(Window *window) {
   text_layer_set_font(s_tariff_layer, font);
   text_layer_set_background_color(s_tariff_layer, s_settings.BackgroundColor);
   text_layer_set_text_color(s_tariff_layer, s_settings.TextColor);
-  text_layer_set_text(s_tariff_layer, "-.-");
+  text_layer_set_text(s_tariff_layer, s_no_data);
   text_layer_set_text_alignment(s_tariff_layer, GTextAlignmentCenter);
   layer_add_child(window_layer, text_layer_get_layer(s_tariff_layer));
   s_top_area_height += font_size.h * 2 + FILLER_SIZE;
