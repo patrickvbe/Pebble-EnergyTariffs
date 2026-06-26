@@ -54,6 +54,47 @@ module.exports = [
     "items": [
       {
         "type": "heading",
+        "defaultValue": "Drempelwaardes"
+      },
+      {
+        "type": "color",
+        "messageKey": "LowColor",
+        "defaultValue": "0x008800",
+        "label": "Laag tarief kleur"
+      },
+      {
+        "type": "input",
+        "messageKey": "LowThreshold",
+        "label": "Laag tarief drempel € / %",
+        "defaultValue": "0.01",
+        "description": "Leeg laten om niet te gebruiken",
+      },
+      {
+        "type": "color",
+        "messageKey": "HighColor",
+        "defaultValue": "0xFF0000",
+        "label": "Hoog tarief kleur"
+      },
+      {
+        "type": "input",
+        "messageKey": "HighThreshold",
+        "label": "Hoog tarief drempel € / %",
+        "defaultValue": "0.03",
+        "description": "Leeg laten om niet te gebruiken",
+      },
+      {
+        "type": "toggle",
+        "messageKey": "ThresholdIsPercentage",
+        "label": "Drempelwaardes zijn percentages",
+        "defaultValue": false
+      }
+    ]
+  },
+  {
+    "type": "section",
+    "items": [
+      {
+        "type": "heading",
         "defaultValue": "Tarief berekening"
       },
       {

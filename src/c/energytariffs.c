@@ -36,9 +36,9 @@ static Layer *s_graph_layer;
 int s_top_area_height = 0;
 int16_t s_bar_width = 0;
 int16_t s_graph_offset = 0;
-#define TEXTBUF_SIZE_INFO 15
+#define TEXTBUF_SIZE_INFO 20
 static char s_buffer_info[TEXTBUF_SIZE_INFO];
-#define TEXTBUF_SIZE_TARIFF 15
+#define TEXTBUF_SIZE_TARIFF 20
 static char s_buffer_tariff[TEXTBUF_SIZE_TARIFF];
 
 // We get max two days of data in the buffer.
@@ -49,6 +49,7 @@ int s_tariffs_count = 0; // Number of entries filled in s_in_buf
 int32_t s_tariffs[STROOM_TARIEF_COUNT];
 int32_t s_tariff_calculated[STROOM_TARIEF_COUNT];
 int32_t s_tar_min=0, s_tar_max=0, s_display_min=0;
+int32_t s_low_threshold = INT32_MIN, s_high_threshold = INT32_MAX;
 bool s_display_today = true; // false = tomorrow.
 static const char s_no_data[] = "geen\ndata";
 
@@ -67,6 +68,11 @@ typedef struct Settings {
   int32_t InkoopVergoeding;  // * 1000
   bool EnergieBelasting;
   bool BTW;
+  bool ThresholdIsPercentage;
+  GColor LowColor;
+  GColor HighColor;
+  int32_t LowThreshold;
+  int32_t HighThreshold;
 } Settings;
 Settings s_settings;
 bool s_settings_changed = false;  // So we know we should save it.
@@ -109,6 +115,16 @@ static void update_time() {
   work_time +=  SECONDS_PER_DAY;
   t = localtime(&work_time);
   s_tomorrow_ymd = tm_to_int(t);
+
+  // See if we already got the data for today yesterday.
+  work_time -=  2 * SECONDS_PER_DAY;
+  t = localtime(&work_time);
+  int yesterday_ymd = tm_to_int(t);
+  if ( s_tariffs_start_ymd == yesterday_ymd && s_tariffs_count > TARIFFS_PER_DAY ) {
+    s_tariffs_start_ymd = s_today_ymd;
+    s_tariffs_count -= TARIFFS_PER_DAY;
+    memmove(s_tariffs, &s_tariffs[TARIFFS_PER_DAY], s_tariffs_count);
+  }
 }
 
 void request_tariffs() {
@@ -180,6 +196,16 @@ void data_updated() {
     } else {
       s_tariff_calculated[idx] = 0;
     }
+  }
+  if ( s_settings.ThresholdIsPercentage ) {
+    int32_t one_percent = (s_tar_max - s_tar_min) / 100;
+    if ( s_settings.LowThreshold == INT32_MIN ) s_low_threshold = INT32_MIN;
+    else s_low_threshold = s_tar_min + one_percent * (s_settings.LowThreshold / 100000);
+    if ( s_settings.HighThreshold == INT32_MAX ) s_high_threshold = INT32_MAX;
+    else s_high_threshold = s_tar_min + one_percent * (s_settings.HighThreshold / 100000);
+  } else {
+    s_low_threshold = s_settings.LowThreshold;
+    s_high_threshold = s_settings.HighThreshold;
   }
   s_display_min = s_tar_min > 0 ? 0 : s_tar_min;
   set_display_today(true);
@@ -288,7 +314,6 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
   }
   tuple = dict_find(iter, MESSAGE_KEY_IncludeTax);
   if(tuple) {
-    APP_LOG(APP_LOG_LEVEL_DEBUG, "Tax %d", tuple->value->uint8);
     bool newvalue = tuple->value->uint8;
     if ( s_settings.EnergieBelasting != newvalue ) {
       s_settings.EnergieBelasting = newvalue;
@@ -298,7 +323,6 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
   }
   tuple = dict_find(iter, MESSAGE_KEY_IncludeVat);
   if(tuple) {
-    APP_LOG(APP_LOG_LEVEL_DEBUG, "Vat %d", tuple->value->uint8);
     bool newvalue = tuple->value->uint8;
     if ( s_settings.BTW != newvalue ) {
       s_settings.BTW = newvalue;
@@ -309,6 +333,38 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
   tuple = dict_find(iter, MESSAGE_KEY_InkoopVergoeding);
   if(tuple) {
     s_settings.InkoopVergoeding = str_to_int100000(tuple->value->cstring);
+    data_updated();
+    s_settings_changed = true;
+  }
+  tuple = dict_find(iter, MESSAGE_KEY_LowColor);
+  if(tuple) {
+    s_settings.LowColor = GColorFromHEX(tuple->value->int32);
+    layer_mark_dirty(s_graph_layer);
+    s_settings_changed = true;
+  }
+  tuple = dict_find(iter, MESSAGE_KEY_HighColor);
+  if(tuple) {
+    s_settings.HighColor = GColorFromHEX(tuple->value->int32);
+    layer_mark_dirty(s_graph_layer);
+    s_settings_changed = true;
+  }
+  tuple = dict_find(iter, MESSAGE_KEY_LowThreshold);
+  if(tuple) {
+    if ( *tuple->value->cstring == 0 ) s_settings.LowThreshold = INT32_MIN;
+    else s_settings.LowThreshold = str_to_int100000(tuple->value->cstring);
+    data_updated();
+    s_settings_changed = true;
+  }
+  tuple = dict_find(iter, MESSAGE_KEY_HighThreshold);
+  if(tuple) {
+    if ( *tuple->value->cstring == 0 ) s_settings.HighThreshold = INT32_MAX;
+    else s_settings.HighThreshold = str_to_int100000(tuple->value->cstring);
+    data_updated();
+    s_settings_changed = true;
+  }
+  tuple = dict_find(iter, MESSAGE_KEY_ThresholdIsPercentage);
+  if(tuple) {
+    s_settings.ThresholdIsPercentage = (bool)tuple->value->uint8;
     data_updated();
     s_settings_changed = true;
   }
@@ -357,7 +413,9 @@ static void graph_update_proc(Layer *layer, GContext *ctx) {
     if ( hour == s_highlight_hour ) {
       graphics_context_set_fill_color(ctx, s_settings.HighlightColor);
     } else if ( !s_display_today || hour >= s_hour_now ) {
-      graphics_context_set_fill_color(ctx, s_settings.ForegroundColorFuture);
+      if ( data[hour] < s_low_threshold ) graphics_context_set_fill_color(ctx, s_settings.LowColor);
+      else if ( data[hour] > s_high_threshold ) graphics_context_set_fill_color(ctx, s_settings.HighColor);
+      else graphics_context_set_fill_color(ctx, s_settings.ForegroundColorFuture);
     } else {
       graphics_context_set_fill_color(ctx, s_settings.ForegroundColorPast);
     }
@@ -426,7 +484,10 @@ static void prv_window_unload(Window *window) {
 static void prv_init(void) {
   // Get data from storage
   s_settings = (struct Settings){GColorBlack, GColorWhite, PBL_IF_COLOR_ELSE(GColorDarkGreen, GColorDarkGray),
-    PBL_IF_COLOR_ELSE(GColorMayGreen, GColorDarkGray), PBL_IF_COLOR_ELSE(GColorGreen, GColorWhite), 2000, true, true};
+    PBL_IF_COLOR_ELSE(GColorMayGreen, GColorDarkGray), PBL_IF_COLOR_ELSE(GColorGreen, GColorWhite), 2000, true, true,
+    // New in  version 1.1:
+    false, PBL_IF_COLOR_ELSE(GColorMayGreen, GColorDarkGray), PBL_IF_COLOR_ELSE(GColorMayGreen, GColorDarkGray), INT32_MIN, INT32_MAX
+  };
   persist_read_data(STORAGE_KEY_SETTINGS, &s_settings, sizeof(s_settings));
 
   if ( persist_exists(STORAGE_KEY_IN_BUF) && persist_exists(STORAGE_KEY_TARIFF) ) {
@@ -466,3 +527,4 @@ int main(void) {
   app_event_loop();
   prv_deinit();
 }
+
